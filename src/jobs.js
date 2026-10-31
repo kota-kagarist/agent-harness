@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runAgent } from "./agent.js";
 import { assertConfigured, config } from "./config.js";
+import { appendNotification } from "./outbox.js";
 
 const TICK_MS = 30_000;
 
@@ -101,6 +102,13 @@ export async function runDueJobs(now = new Date()) {
     try {
       const { reply } = await runAgent(job.prompt);
       console.log(reply);
+      // Queue the result for the user (see outbox.js); failing to queue
+      // must not fail the job itself.
+      try {
+        await appendNotification(reply, { source: `job:${job.name}` });
+      } catch (err) {
+        console.error(`job ${job.name}: could not queue notification: ${err.message}`);
+      }
       results.push({ name: job.name, reply });
     } catch (err) {
       console.error(`job ${job.name} failed: ${err.message}`);

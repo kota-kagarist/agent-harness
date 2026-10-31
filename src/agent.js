@@ -12,6 +12,7 @@
 import { checkApproval } from "./approval.js";
 import { compactMessages } from "./compact.js";
 import { chatCompletion, chatCompletionStream } from "./llm.js";
+import { ensureMcpConnected } from "./mcp.js";
 import { buildSystemPrompt } from "./memory.js";
 import { findTool, toolSchemas } from "./tools.js";
 
@@ -34,6 +35,9 @@ export async function runAgent(
     ...history,
     { role: "user", content: userText },
   ];
+  // Connect MCP servers (if any are configured) so their tools are part of
+  // the schema list. A no-op when workspace/connectors.json is absent.
+  await ensureMcpConnected();
   const schemas = toolSchemas(excludeTools);
 
   for (let step = 0; step < MAX_STEPS; step++) {

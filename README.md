@@ -8,8 +8,9 @@ This is **not** a model. It is the orchestration layer: an agent loop with
 tool calls, persistent memory kept as plain Markdown files, an approval gate
 for consequential actions, a job runner for recurring work, sub-agent
 delegation, conversation compaction, on-demand skills, resumable sessions,
-and streaming responses. Bring your own LLM API (any OpenAI-compatible
-endpoint, e.g. Meta Model API).
+streaming responses, external tools via MCP connectors, and a notification
+outbox so background work can reach you. Bring your own LLM API (any
+OpenAI-compatible endpoint, e.g. Meta Model API).
 
 ## Why
 
@@ -24,7 +25,7 @@ preferences across weeks, and prepare work before you ask) are mostly
   never happen silently.
 
 This repo implements those pieces in dependency-free Node.js ESM
-(~900 lines) so you can read the whole thing in one sitting and bend it to
+(~1,300 lines) so you can read the whole thing in one sitting and bend it to
 your own use.
 
 ## Quickstart
@@ -51,7 +52,7 @@ LLM_MODEL=mock npm start -- --once "What time is it? Use the tool."
    llm.js       OpenAI-compatible chat client, SSE streaming (+ mock provider)
    memory.js    loads IDENTITY.md / USER.md / MEMORY.md into the prompt
    tools.js     tool registry (files, commands, delegate, memory_search,
-                load_skill, todo_write, ...)
+                load_skill, todo_write, notify, fetch_url, + MCP tools)
    approval.js  approval gate for consequential tools
    agent.js     the agent loop
    subagent.js  runs a subtask in a fresh conversation (depth capped at 1)
@@ -60,11 +61,13 @@ LLM_MODEL=mock npm start -- --once "What time is it? Use the tool."
    session.js   saves/loads history as workspace/sessions/<id>.json
    jobs.js      job runner: interval / daily / runonce, persisted run state
    scheduler.js v0.1 entry point, now a shim over jobs.js
-   index.js     CLI (interactive chat, --once, --session <id>)
+   mcp.js       MCP client: spawns stdio servers from connectors.json
+   outbox.js    notification queue at workspace/outbox.jsonl
+   index.js     CLI (interactive chat, --once, --session <id>, --outbox)
  examples/
    workspace/   starter memory files — copy to ./workspace and edit
    skills/      an example SKILL.md pack
-   jobs.example.json / schedules.example.json
+   jobs.example.json / schedules.example.json / connectors.example.json
 ```
 
 ### Memory as files
@@ -121,6 +124,51 @@ resumed. Interactive mode streams the model's text as it arrives (SSE,
 including streamed tool calls); if streaming fails it falls back to a plain
 completion. The mock provider does not stream.
 
+### Web fetch
+
+The read-only `fetch_url` tool fetches an http(s) URL and returns its text:
+HTML is reduced to plain text (script/style blocks dropped, tags stripped),
+anything else comes back raw, and the result is truncated to 4000
+characters. No approval needed — it cannot change anything.
+
+### Connectors (MCP)
+
+External tools plug in through the [Model Context
+Protocol](https://modelcontextprotocol.io). Declare stdio servers in
+`workspace/connectors.json` (see `examples/connectors.example.json`):
+
+```json
+{
+  "servers": [
+    { "name": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+  ]
+}
+```
+
+On the first agent run, each server is spawned, the MCP `initialize`
+handshake runs, and its tools are registered as `mcp__<server>__<tool>`.
+Because a remote tool's effects are unknown, every MCP tool passes through
+the approval gate. A missing `connectors.json` or a server that fails to
+start never breaks the agent — it simply runs without those tools.
+
+This is also where **browser control** plugs in: point a server entry at a
+browser MCP server (e.g. Playwright MCP above) and the agent gains browser
+tools through the same path — no browser code lives in the harness itself.
+
+### Notifications (outbox)
+
+Background work needs a way to reach you without interrupting you. The
+outbox is a JSON Lines queue at `workspace/outbox.jsonl`; each record is
+`{ id, createdAt, text, source, delivered }`. The `notify` tool lets the
+agent queue a message (`source: "agent"`), and job results are queued
+automatically (`source: "job:<name>"`). The interactive CLI shows
+undelivered notifications when it starts and after each turn, then marks
+them delivered. To peek without marking anything:
+
+```sh
+node src/index.js --outbox
+```
+
 ### Jobs
 
 Copy `examples/jobs.example.json` to `workspace/jobs.json`, edit, then:
@@ -143,10 +191,12 @@ run it under systemd/pm2 or call `--once` from real cron.
 ## Roadmap
 
 - [x] Sub-agent delegation (spawn a child agent for a subtask)
-- [ ] Connectors (Gmail / Calendar / GitHub via CLI or MCP)
+- [x] Connectors via MCP (stdio servers from workspace/connectors.json)
 - [x] Conversation compaction for long sessions
 - [x] Memory search (keyword; embeddings still open)
 - [x] Streaming responses
+- [x] Proactive notifications (outbox queue fed by jobs and the notify tool)
+- [x] Browser control — via an MCP server such as Playwright MCP (see Connectors)
 
 ## License
 

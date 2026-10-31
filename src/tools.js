@@ -2,12 +2,16 @@
 // approval (changes the world / is hard to undo), and its implementation.
 // Paths are confined to the workspace directory. Tool implementations
 // receive (args, ctx) where ctx carries { ask, depth } from the agent loop.
+// Tools from MCP servers (see mcp.js) are merged into toolSchemas/findTool
+// dynamically once connected.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { config } from "./config.js";
+import { getMcpTools } from "./mcp.js";
+import { appendNotification } from "./outbox.js";
 import { loadSkill } from "./skills.js";
 
 const run = promisify(execFile);
@@ -38,6 +42,43 @@ function safePath(rel) {
     throw new Error(`Path escapes the workspace: ${rel}`);
   }
   return abs;
+}
+
+// fetch_url: read a page as plain text. HTML is reduced by dropping
+// script/style blocks and stripping tags; anything else is returned raw.
+// Read-only and capped, so it is not approval-gated.
+const FETCH_TIMEOUT_MS = 10_000;
+const FETCH_MAX_CHARS = 4000;
+
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchUrlText(url) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Only http(s) URLs can be fetched: ${url}`);
+  }
+  const res = await fetch(parsed, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+  const body = await res.text();
+  const type = res.headers.get("content-type") ?? "";
+  const text =
+    type.includes("html") || /^\s*</.test(body) ? htmlToText(body) : body.trim();
+  return text.slice(0, FETCH_MAX_CHARS) || "(empty response)";
 }
 
 export const tools = [
@@ -181,6 +222,37 @@ export const tools = [
     run: async ({ name }) => loadSkill(name),
   },
   {
+    name: "notify",
+    description:
+      "Queue a notification for the user in the outbox " +
+      "(workspace/outbox.jsonl). Use it for results the user should see " +
+      "later, e.g. finished background work. Undelivered notifications " +
+      "are shown in the interactive CLI; this does not interrupt the user.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+    },
+    requiresApproval: false,
+    run: async ({ text }) => {
+      const record = await appendNotification(text, { source: "agent" });
+      return `Queued notification (${record.id}).`;
+    },
+  },
+  {
+    name: "fetch_url",
+    description:
+      "Fetch an http(s) URL and return its text content (HTML is stripped " +
+      "to plain text), truncated to 4000 characters. Read-only.",
+    parameters: {
+      type: "object",
+      properties: { url: { type: "string" } },
+      required: ["url"],
+    },
+    requiresApproval: false,
+    run: async ({ url }) => fetchUrlText(url),
+  },
+  {
     name: "todo_write",
     description:
       "Replace the session's todo list with the given items and return the " +
@@ -203,7 +275,7 @@ export const tools = [
 ];
 
 export function toolSchemas(exclude = []) {
-  return tools
+  return [...tools, ...getMcpTools()]
     .filter((t) => !exclude.includes(t.name))
     .map((t) => ({
       type: "function",
@@ -212,5 +284,5 @@ export function toolSchemas(exclude = []) {
 }
 
 export function findTool(name) {
-  return tools.find((t) => t.name === name);
+  return tools.find((t) => t.name === name) ?? getMcpTools().find((t) => t.name === name);
 }

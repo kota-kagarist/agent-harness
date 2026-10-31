@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/path/to/shared/dir"
+      ],
+      "command": "npx",
+      "name": "filesystem"
+    },
+    {
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ],
+      "command": "npx",
+      "name": "playwright"
+    }
+  ]
+}
