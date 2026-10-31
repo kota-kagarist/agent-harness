@@ -20,6 +20,9 @@ export const config = {
   model: process.env.LLM_MODEL || "",
   workspace: resolve(process.env.AGENT_WORKSPACE || "./workspace"),
   allowUnattended: process.env.AGENT_ALLOW_UNATTENDED === "1",
+  // Rough token budget for the conversation history; older turns are
+  // compacted into a summary once the estimate passes this (see compact.js).
+  compactThreshold: Number(process.env.AGENT_COMPACT_THRESHOLD || 24_000),
 };
 
 export function assertConfigured() {

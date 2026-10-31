@@ -1,22 +1,54 @@
 // The agent loop: send messages + tool schemas to the model, execute the
 // tool calls it asks for (through the approval gate), feed results back,
 // and repeat until the model answers with plain text.
+// Options:
+//   history      prior non-system messages (the session so far)
+//   ask          approval callback (null = unattended rules)
+//   onEvent      called with { type: "tool", name, approved } per tool call
+//   depth        0 at the top level, 1 inside a sub-agent
+//   excludeTools tool names hidden from the model (sub-agents lose delegate)
+//   stream       stream the model's text via onToken, falling back to a
+//                plain completion if streaming fails
 import { checkApproval } from "./approval.js";
-import { chatCompletion } from "./llm.js";
+import { compactMessages } from "./compact.js";
+import { chatCompletion, chatCompletionStream } from "./llm.js";
 import { buildSystemPrompt } from "./memory.js";
 import { findTool, toolSchemas } from "./tools.js";
 
 const MAX_STEPS = 20;
 
-export async function runAgent(userText, { history = [], ask = null, onEvent = () => {} } = {}) {
-  const messages = [
+export async function runAgent(
+  userText,
+  {
+    history = [],
+    ask = null,
+    onEvent = () => {},
+    depth = 0,
+    excludeTools = [],
+    stream = false,
+    onToken = () => {},
+  } = {},
+) {
+  let messages = [
     { role: "system", content: buildSystemPrompt() },
     ...history,
     { role: "user", content: userText },
   ];
+  const schemas = toolSchemas(excludeTools);
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    const message = await chatCompletion(messages, toolSchemas());
+    messages = await compactMessages(messages);
+
+    let message;
+    if (stream) {
+      try {
+        message = await chatCompletionStream(messages, schemas, onToken);
+      } catch {
+        message = await chatCompletion(messages, schemas);
+      }
+    } else {
+      message = await chatCompletion(messages, schemas);
+    }
     messages.push(message);
 
     if (!message.tool_calls?.length) {
@@ -25,7 +57,9 @@ export async function runAgent(userText, { history = [], ask = null, onEvent = (
     }
 
     for (const call of message.tool_calls) {
-      const tool = findTool(call.function.name);
+      const tool = excludeTools.includes(call.function.name)
+        ? undefined
+        : findTool(call.function.name);
       let result;
       if (!tool) {
         result = `Error: unknown tool ${call.function.name}`;
@@ -43,7 +77,7 @@ export async function runAgent(userText, { history = [], ask = null, onEvent = (
             result = "Denied: the user did not approve this action.";
           } else {
             try {
-              result = String(await tool.run(args));
+              result = String(await tool.run(args, { ask, depth }));
             } catch (err) {
               result = `Error: ${err.message}`;
             }
