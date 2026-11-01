@@ -15,7 +15,8 @@ export function estimateTokens(messages) {
   return Math.ceil(chars / 4);
 }
 
-async function summarize(old) {
+// Also used by session.js to write the end-of-session daily note.
+export async function summarizeMessages(old) {
   // The mock provider cannot summarize; a fixed stand-in keeps the loop
   // (and the tests) working without an API key.
   if (config.model === "mock") {
@@ -57,7 +58,7 @@ export async function compactMessages(
   while (split < rest.length && rest[split].role !== "user") split++;
   if (split <= 0 || split >= rest.length) return messages;
 
-  const summary = await summarize(rest.slice(0, split));
+  const summary = await summarizeMessages(rest.slice(0, split));
   return [
     ...head,
     { role: "user", content: `[Summary of earlier conversation]\n${summary}` },

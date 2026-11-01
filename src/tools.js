@@ -10,6 +10,7 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { config } from "./config.js";
+import { completeGoal, createGoal, listGoals, logGoal } from "./goals.js";
 import { getMcpTools } from "./mcp.js";
 import { appendNotification } from "./outbox.js";
 import { loadSkill } from "./skills.js";
@@ -251,6 +252,73 @@ export const tools = [
     },
     requiresApproval: false,
     run: async ({ url }) => fetchUrlText(url),
+  },
+  {
+    name: "goal_create",
+    description:
+      "Create a goal file at workspace/goals/<slug>/GOAL.md (frontmatter " +
+      "title/status/created plus the description). The slug is generated " +
+      "from the title. Returns the new goal's slug.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+      },
+      required: ["title"],
+    },
+    requiresApproval: false,
+    run: async ({ title, description = "" }) => {
+      const goal = createGoal(title, description);
+      return `Created goal "${goal.title}" (slug: ${goal.slug}, status: ${goal.status}).`;
+    },
+  },
+  {
+    name: "goal_list",
+    description:
+      "List all goals in workspace/goals/ with slug, title, status " +
+      "(active/completed) and creation date.",
+    parameters: { type: "object", properties: {} },
+    requiresApproval: false,
+    run: async () => {
+      const goals = listGoals();
+      if (!goals.length) return "No goals yet.";
+      return goals
+        .map((g) => `- ${g.slug} [${g.status}] ${g.title} (created ${g.created})`)
+        .join("\n");
+    },
+  },
+  {
+    name: "goal_log",
+    description:
+      "Append a dated progress entry to a goal's GOAL.md progress log.",
+    parameters: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Goal slug from goal_list" },
+        text: { type: "string", description: "What happened / what is next" },
+      },
+      required: ["slug", "text"],
+    },
+    requiresApproval: false,
+    run: async ({ slug, text }) => {
+      const { entry } = logGoal(slug, text);
+      return `Logged to goal ${slug}: ${entry}`;
+    },
+  },
+  {
+    name: "goal_complete",
+    description: "Mark a goal as completed (frontmatter status in GOAL.md).",
+    parameters: {
+      type: "object",
+      properties: { slug: { type: "string", description: "Goal slug from goal_list" } },
+      required: ["slug"],
+    },
+    requiresApproval: false,
+    run: async ({ slug }) => {
+      const goal = completeGoal(slug);
+      return `Goal "${goal.title}" (${goal.slug}) is now completed.`;
+    },
   },
   {
     name: "todo_write",

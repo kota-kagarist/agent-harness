@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runAgent } from "./agent.js";
 import { assertConfigured, config } from "./config.js";
+import { evaluateHooks, loadHooks } from "./hooks.js";
 import { appendNotification } from "./outbox.js";
 
 const TICK_MS = 30_000;
@@ -123,18 +124,32 @@ export async function runDueJobs(now = new Date()) {
   return results;
 }
 
+// One scheduler tick: due jobs (time-driven) plus hook evaluation
+// (event-driven, see hooks.js). A failing hook check never stops the jobs.
+async function tick() {
+  await runDueJobs();
+  try {
+    await evaluateHooks();
+  } catch (err) {
+    console.error(`hooks: evaluation failed: ${err.message}`);
+  }
+}
+
 export async function main() {
   assertConfigured();
   const jobs = loadJobs();
-  if (!jobs.length) {
+  const hooks = loadHooks();
+  if (!jobs.length && !hooks.length) {
     console.error(
-      `No jobs found in ${config.workspace} (jobs.json or schedules.json). See examples/.`,
+      `No jobs or hooks found in ${config.workspace} (jobs.json, schedules.json or hooks.json). See examples/.`,
     );
     process.exit(1);
   }
-  console.log(`jobs: ${jobs.length} job(s) loaded, ticking every ${TICK_MS / 1000}s`);
-  await runDueJobs();
-  setInterval(() => void runDueJobs(), TICK_MS);
+  console.log(
+    `jobs: ${jobs.length} job(s), ${hooks.length} hook(s) loaded, ticking every ${TICK_MS / 1000}s`,
+  );
+  await tick();
+  setInterval(() => void tick(), TICK_MS);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

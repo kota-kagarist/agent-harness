@@ -42,7 +42,9 @@ class McpClient {
     this.toolEntries = [];
   }
 
-  async connect() {
+  // With initOnly, stops after the initialize handshake (no tools/list) —
+  // that is all the doctor probe needs.
+  async connect({ initTimeoutMs = INIT_TIMEOUT_MS, initOnly = false } = {}) {
     const { command, args = [], env = {} } = this.server;
     const child = spawn(command, args, {
       env: { ...process.env, ...env },
@@ -70,11 +72,12 @@ class McpClient {
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "agent-harness", version: "0.3.0" },
+        clientInfo: { name: "agent-harness", version: "0.4.0" },
       },
-      INIT_TIMEOUT_MS,
+      initTimeoutMs,
     );
     this.notify("notifications/initialized");
+    if (initOnly) return init;
     const { tools = [] } = await this.request("tools/list", {});
     this.toolEntries = tools.map((def) => this.toToolEntry(def));
     return init;
@@ -203,4 +206,32 @@ export function getMcpTools() {
 export function closeMcp() {
   for (const client of clients.splice(0)) client.close();
   connectPromise = null;
+}
+
+// Doctor support: spawn one server, try only the initialize handshake
+// within `timeoutMs`, then shut it down. Never throws — the result is
+// { ok, detail }. The throwaway client is not registered in `clients`,
+// so a probe never disturbs a live connection.
+export async function probeMcpServer(server, timeoutMs = 3000) {
+  const client = new McpClient(server);
+  let timer;
+  try {
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    const init = await Promise.race([
+      client.connect({ initOnly: true, initTimeoutMs: timeoutMs }),
+      timeout,
+    ]);
+    const name = init?.serverInfo?.name;
+    return { ok: true, detail: `initialize ok${name ? ` (server: ${name})` : ""}` };
+  } catch (err) {
+    return { ok: false, detail: err.message };
+  } finally {
+    clearTimeout(timer);
+    client.close();
+  }
 }
