@@ -178,6 +178,41 @@ export const tools = [
     },
   },
   {
+    name: "delegate_many",
+    description:
+      "Delegate several independent subtasks (max 5) to sub-agents that " +
+      "run in parallel, each with a fresh conversation. Returns their " +
+      "final answers as a numbered list, in task order. Use it for " +
+      "independent pieces of work — e.g. scanning several files at once — " +
+      "not for steps that depend on each other's results.",
+    parameters: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description: "Complete, self-contained task descriptions",
+        },
+      },
+      required: ["tasks"],
+    },
+    requiresApproval: false,
+    run: async ({ tasks }, ctx = {}) => {
+      if ((ctx.depth ?? 0) >= 1) {
+        return "Error: delegate_many is not available inside a sub-agent.";
+      }
+      const list = (Array.isArray(tasks) ? tasks : [])
+        .map((t) => String(t).trim())
+        .filter(Boolean);
+      if (!list.length) return "Error: delegate_many needs at least one task.";
+      const { runSubagents } = await import("./subagent.js");
+      return runSubagents(list.slice(0, 5), {
+        ask: ctx.ask ?? null,
+        depth: (ctx.depth ?? 0) + 1,
+      });
+    },
+  },
+  {
     name: "memory_search",
     description:
       "Search long-term memory (MEMORY.md and workspace/memory/*.md) for a " +

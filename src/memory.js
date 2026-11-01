@@ -21,6 +21,15 @@ export function buildSystemPrompt() {
       parts.push(`\n----- ${name} -----\n${readFileSync(path, "utf8").trim()}`);
     }
   }
+  // AGENTS.md holds operating notes — conventions and standing
+  // instructions for how work is done in this workspace. Loaded whole
+  // (it is meant to stay short); absent file, nothing changes.
+  const agentsPath = join(config.workspace, "AGENTS.md");
+  if (existsSync(agentsPath)) {
+    parts.push(
+      `\n----- AGENTS.md (operating notes) -----\n${readFileSync(agentsPath, "utf8").trim()}`,
+    );
+  }
   // Skills: only the name + description list is injected. The full text is
   // loaded on demand with the load_skill tool (see skills.js).
   try {

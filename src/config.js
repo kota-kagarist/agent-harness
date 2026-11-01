@@ -14,8 +14,17 @@ function loadDotEnv() {
 
 loadDotEnv();
 
+// "openai" talks to any OpenAI-compatible chat completions endpoint;
+// "anthropic" uses the Claude Messages API natively (see llm.js). The
+// mock model (LLM_MODEL=mock) bypasses both — no key needed either way.
+const provider = (process.env.LLM_PROVIDER || "openai").toLowerCase();
+
 export const config = {
-  baseUrl: (process.env.LLM_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
+  provider,
+  baseUrl: (
+    process.env.LLM_BASE_URL ||
+    (provider === "anthropic" ? "https://api.anthropic.com" : "https://api.openai.com/v1")
+  ).replace(/\/$/, ""),
   apiKey: process.env.LLM_API_KEY || "",
   model: process.env.LLM_MODEL || "",
   workspace: resolve(process.env.AGENT_WORKSPACE || "./workspace"),

@@ -10,8 +10,9 @@ for consequential actions, a job runner for recurring work, file-change
 hooks for event-driven work, goals tracked as files, sub-agent
 delegation, conversation compaction, on-demand skills, resumable sessions,
 streaming responses, external tools via MCP connectors, and a notification
-outbox so background work can reach you. Bring your own LLM API (any
-OpenAI-compatible endpoint, e.g. Meta Model API).
+outbox so background work can reach you. Bring your own LLM API — any
+OpenAI-compatible endpoint (e.g. Meta Model API), or Claude via the
+Anthropic Messages API.
 
 ## Why
 
@@ -26,7 +27,7 @@ preferences across weeks, and prepare work before you ask) are mostly
   never happen silently.
 
 This repo implements those pieces in dependency-free Node.js ESM
-(~1,900 lines) so you can read the whole thing in one sitting and bend it to
+(~2,400 lines) so you can read the whole thing in one sitting and bend it to
 your own use.
 
 ## Quickstart
@@ -50,11 +51,16 @@ LLM_MODEL=mock npm start -- --once "What time is it? Use the tool."
 ```
  src/
    config.js    env-based configuration
-   llm.js       OpenAI-compatible chat client, SSE streaming (+ mock provider)
-   memory.js    loads IDENTITY.md / USER.md / MEMORY.md into the prompt
-   tools.js     tool registry (files, commands, delegate, memory_search,
-                load_skill, goals, todo_write, notify, fetch_url, + MCP tools)
+   llm.js       LLM clients: OpenAI-compatible (SSE streaming) and Anthropic
+                Messages API, with retries and usage totals (+ mock provider)
+   memory.js    loads IDENTITY.md / USER.md / MEMORY.md / AGENTS.md into
+                the prompt
+   tools.js     tool registry (files, commands, delegate, delegate_many,
+                memory_search, load_skill, goals, todo_write, notify,
+                fetch_url, + MCP tools)
    approval.js  approval gate for consequential tools
+   permissions.js  saved allow/deny rules at workspace/permissions.json
+   commands.js  slash-command parsing for the interactive CLI (/help, ...)
    agent.js     the agent loop
    subagent.js  runs a subtask in a fresh conversation (depth capped at 1)
    compact.js   summarizes old turns when history outgrows the token budget
@@ -70,13 +76,39 @@ LLM_MODEL=mock npm start -- --once "What time is it? Use the tool."
    mcp.js       MCP client: spawns stdio servers from connectors.json
    outbox.js    notification queue at workspace/outbox.jsonl
    index.js     CLI (interactive chat, --once, --session <id>, --outbox,
-                --goals, --doctor)
+                --goals, --permissions, --doctor)
  examples/
    workspace/   starter memory files — copy to ./workspace and edit
    skills/      an example SKILL.md pack
    jobs.example.json / schedules.example.json / connectors.example.json /
    hooks.example.json
 ```
+
+### Providers
+
+`LLM_PROVIDER` selects the wire protocol (`LLM_MODEL=mock` overrides
+both and needs no key):
+
+- `openai` (default) — any OpenAI-compatible chat completions endpoint:
+  `LLM_BASE_URL` (e.g. `https://api.meta.ai/v1`), `LLM_API_KEY`,
+  `LLM_MODEL`. Responses stream over SSE in interactive mode.
+- `anthropic` — the Claude Messages API, natively: internal messages
+  are converted to Anthropic's shape (system prompt lifted out,
+  `tool_use` / `tool_result` blocks) and back. `LLM_BASE_URL` defaults
+  to `https://api.anthropic.com`; set `LLM_MODEL` to a Claude model id:
+
+```sh
+LLM_PROVIDER=anthropic LLM_API_KEY=sk-ant-... LLM_MODEL=claude-sonnet-4-5 npm start
+```
+
+Note: Anthropic requests do **not** stream — the reply arrives in one
+chunk (the CLI still prints it the same way).
+
+Either way, requests are retried with exponential backoff on transient
+failures only (HTTP 429, 5xx, network errors; up to 3 retries), and when
+the API reports token usage it accumulates across the session — the
+interactive CLI shows a small `[tokens in/out cumulative: N / M]` line
+after each turn.
 
 ### Memory as files
 
@@ -89,6 +121,11 @@ The agent's long-term memory is just Markdown in a workspace directory:
 They are read into the system prompt on every run. The agent can update
 `MEMORY.md` with the `write_file` tool (gated by approval), and you can edit
 the files yourself at any time. No database, no embeddings required to start.
+
+A fourth file, `AGENTS.md`, holds *operating notes* — conventions for how
+work is done in this workspace (where drafts go, what to always check) as
+opposed to who the user is. If present, it is loaded into the prompt under
+an "operating notes" heading; see `examples/workspace/AGENTS.md`.
 For anything beyond the always-loaded `MEMORY.md`, the `memory_search` tool
 searches `MEMORY.md` plus `workspace/memory/*.md` by keyword and returns
 matching lines with file names and line numbers.
@@ -100,14 +137,31 @@ Tools are marked `requiresApproval` when they change the world
 such call. Non-interactive runs (jobs, `--once`) deny gated tools
 unless `AGENT_ALLOW_UNATTENDED=1` is set — safe by default.
 
+Decisions can be saved. Answering `a` ("always allow") at the prompt
+records the tool in `workspace/permissions.json`:
+
+```json
+{ "allow": ["write_file"], "deny": [] }
+```
+
+A saved `allow` runs without asking from then on; a saved `deny` never
+runs (deny wins if a tool is somehow in both lists). Saved rules are
+checked before prompting and before the unattended fallback, in every
+mode. Inspect them with `node src/index.js --permissions`, and edit or
+delete the file by hand to change your mind.
+
 ### Sub-agent delegation
 
 The `delegate` tool hands a self-contained task to a sub-agent running with
 a fresh conversation; only its final answer comes back, so the parent's
 context stays focused. Nesting is capped at depth 1 (the child runs without
-`delegate`), and the approval gate is inherited from the parent. The mock
+the delegate tools), and the approval gate is inherited from the parent. The mock
 provider understands `DELEGATE: <task>` in a prompt, so delegation can be
 smoke-tested without an API key.
+
+For independent pieces of work, `delegate_many` fans out up to 5 tasks to
+sub-agents running in parallel and returns their answers as a numbered
+list, in task order.
 
 ### Compaction
 
@@ -131,6 +185,16 @@ the conversation history at `workspace/sessions/<id>.json`, so chats can be
 resumed. Interactive mode streams the model's text as it arrives (SSE,
 including streamed tool calls); if streaming fails it falls back to a plain
 completion. The mock provider does not stream.
+
+In interactive mode, lines starting with `/` are slash commands handled
+by the harness itself, never sent to the model:
+
+```
+/help     show the command list      /outbox   show undelivered notifications
+/clear    clear the history          /goals    list goals
+/compact  compact the history now    /exit     end the session
+/model    show provider and model
+```
 
 When a session ends (interactive exit, or after `--once --session`), a
 short summary is appended to that day's memory note at
@@ -263,6 +327,12 @@ MCP server answering `initialize` within 3s) and exits 1 if anything is NG.
 - [x] Goals as files, with create / list / log / complete tools (v0.4)
 - [x] Daily memory notes appended when a session ends (v0.4)
 - [x] `--doctor` environment self-check that never prints secrets (v0.4)
+- [x] Anthropic Messages API as a native provider (`LLM_PROVIDER=anthropic`) (v0.5)
+- [x] Saved permissions — per-tool allow/deny rules in permissions.json (v0.5)
+- [x] Parallel delegation with `delegate_many` (up to 5 sub-agents) (v0.5)
+- [x] Slash commands in the interactive CLI (/help, /compact, /model, ...) (v0.5)
+- [x] `AGENTS.md` operating notes loaded into the system prompt (v0.5)
+- [x] LLM retries with exponential backoff, plus cumulative usage totals (v0.5)
 
 ## License
 

@@ -72,7 +72,7 @@ class McpClient {
       {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: {},
-        clientInfo: { name: "agent-harness", version: "0.4.0" },
+        clientInfo: { name: "agent-harness", version: "0.5.0" },
       },
       initTimeoutMs,
     );
